@@ -12,6 +12,20 @@
 
 * restart nexus3
 
+## WAZEE CHANGES
+
+Added sorting by version number instead of last modified time.
+
+Version number is updated in `build.gradle`
+
+To build:
+
+./gradlew build
+
+The packaged jar will be in ./build/libs.
+
+Follow installation directions above.
+
 ## Usage
 
 If you installed and the bundle is activeed, like this.
