@@ -18,6 +18,10 @@ Added sorting by version number instead of last modified time.
 
 Version number is updated in `build.gradle`
 
+Fixed finding snapshots when downloading an artifact.
+
+Changed 'p' (extension) parameter to 'e' to match nexus 1 plugin.
+
 To build:
 
 ./gradlew build
@@ -58,7 +62,7 @@ The plugin provides the following new HTTP resources :
   - `a` : artifactId of the artifacts to match
   - `v` : artifact version, default value is latest version
   - `c` : classifier of the artifacts to match ('sources', 'javadoc', etc)
-  - `p` : packaging of the artifacts to match ('jar', 'war', etc), default value is jar
+  - `e` : extension of the artifacts to match ('jar', 'war', etc), default value is jar *WAZEE CHANGE*
 
 
 Note that if you want to retrieve the artifact from your Rundeck script, you can use content api, example is:

@@ -80,7 +80,7 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 	public Response content(@QueryParam("r") String repositoryName, @QueryParam("g") String groupId,
 			@QueryParam("a") String artifactId, @QueryParam("v") String version,
 			@QueryParam("c") @DefaultValue("") String classifier,
-			@QueryParam("p") @DefaultValue("jar") String extension) {
+			@QueryParam("e") @DefaultValue("jar") String extension) {
 
 		// default version
 		version = Optional.ofNullable(version)
