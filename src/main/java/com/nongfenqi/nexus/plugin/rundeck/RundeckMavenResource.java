@@ -78,7 +78,8 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 	@GET
 	@Path("content")
 	public Response content(@QueryParam("r") String repositoryName, @QueryParam("g") String groupId,
-			@QueryParam("a") String artifactId, @QueryParam("v") String version, @QueryParam("c") String classifier,
+			@QueryParam("a") String artifactId, @QueryParam("v") String version,
+			@QueryParam("c") @DefaultValue("") String classifier,
 			@QueryParam("p") @DefaultValue("jar") String extension) {
 
 		// default version
@@ -87,6 +88,7 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 
 		// valid params
 		if (isBlank(repositoryName) || isBlank(groupId) || isBlank(artifactId) || isBlank(version)) {
+			log.debug("repositoryName: {}, groupId: {}, artifactId: {}, version: {}", repositoryName,groupId,artifactId,version);
 			return NOT_FOUND;
 		}
 
@@ -95,6 +97,7 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 			return NOT_FOUND;
 		}
 
+		log.debug("Getting facet supplier");
 		StorageFacet facet = repository.facet(StorageFacet.class);
 		Supplier<StorageTx> storageTxSupplier = facet.txSupplier();
 
@@ -110,7 +113,16 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 
 		String fileName = artifactId + "-" + version + (isBlank(classifier) ? "" : ("-" + classifier)) + "."
 				+ extension;
+		log.debug("fileName: {}. version: {}, repository: {}",fileName, version, repository);
+
+		// Snapshots have special paths - strip off the timestamp and replace with SNAPSHOT
+		if (repository.getName().equals("snapshots")) {
+			version = version.substring(0, version.indexOf("-"))+"-SNAPSHOT";
+			log.debug("version now: {}",version);
+		}
+
 		String path = groupId.replace(".", "/") + "/" + artifactId + "/" + version + "/" + fileName;
+		log.debug("path: {}",path);
 		Asset asset = tx.findAssetWithProperty("name", path, bucket);
 		log.debug("rundeck download asset: {}", asset);
 		if (null == asset) {
