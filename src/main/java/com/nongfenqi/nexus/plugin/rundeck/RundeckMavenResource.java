@@ -58,6 +58,8 @@ import org.sonatype.nexus.repository.storage.StorageTx;
 import org.sonatype.nexus.rest.Resource;
 
 import com.google.common.base.Supplier;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 
 @Named
 @Singleton
@@ -73,6 +75,8 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 	public RundeckMavenResource(SearchService searchService, RepositoryManager repositoryManager) {
 		this.searchService = checkNotNull(searchService);
 		this.repositoryManager = checkNotNull(repositoryManager);
+
+		log.info("RundeckMavenResource: Constructor");
 	}
 
 	@GET
@@ -88,7 +92,8 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 
 		// valid params
 		if (isBlank(repositoryName) || isBlank(groupId) || isBlank(artifactId) || isBlank(version)) {
-			log.debug("repositoryName: {}, groupId: {}, artifactId: {}, version: {}", repositoryName,groupId,artifactId,version);
+			log.debug("repositoryName: {}, groupId: {}, artifactId: {}, version: {}", repositoryName, groupId,
+					artifactId, version);
 			return NOT_FOUND;
 		}
 
@@ -111,18 +116,34 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 			return commitAndReturn(NOT_FOUND, tx);
 		}
 
-		String fileName = artifactId + "-" + version + (isBlank(classifier) ? "" : ("-" + classifier)) + "."
+		String fileName = artifactId + "-" + version //
+				+ (isBlank(classifier) ? "" : ("-" + classifier)) + "." //
 				+ extension;
-		log.debug("fileName: {}. version: {}, repository: {}",fileName, version, repository);
+
+		String pathVersion = version;
 
 		// Snapshots have special paths - strip off the timestamp and replace with SNAPSHOT
 		if (repository.getName().equals("snapshots")) {
-			version = version.substring(0, version.indexOf("-"))+"-SNAPSHOT";
-			log.debug("version now: {}",version);
+			// version MAY look like: 17.25-20180102.192026-6
+			// OR it may just be 17.25-SNAPSHOT
+			if (version.indexOf("-SNAPSHOT") < 0) {
+				// this version is an actual file name so strip off the timestamp and replace with -SNAPSHOT
+				log.debug("fileName: {}. version: {}, repository: {}", fileName, version, repository);
+				pathVersion = version.substring(0, version.indexOf("-")) + "-SNAPSHOT";
+			}
+			else {
+				// we need to find the latest snapshot and use that
+				// no need to update pathVersion -it's already correct
+				// filename needs to be resolved, though
+				String fileVersion = latestSnapshot(repositoryName, groupId, artifactId, version);
+				fileName = artifactId + "-" + fileVersion //
+						+ (isBlank(classifier) ? "" : ("-" + classifier)) + "." //
+						+ extension;
+			}
 		}
 
-		String path = groupId.replace(".", "/") + "/" + artifactId + "/" + version + "/" + fileName;
-		log.debug("path: {}",path);
+		String path = groupId.replace(".", "/") + "/" + artifactId + "/" + pathVersion + "/" + fileName;
+		log.debug("path: {}", path);
 		Asset asset = tx.findAssetWithProperty("name", path, bucket);
 		log.debug("rundeck download asset: {}", asset);
 		if (null == asset) {
@@ -142,9 +163,9 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 	@Produces(APPLICATION_JSON)
 	public List<RundeckXO> version(@DefaultValue("10") @QueryParam("l") int limit, @QueryParam("r") String repository,
 			@QueryParam("g") String groupId, @QueryParam("a") String artifactId, @QueryParam("c") String classifier,
-			@QueryParam("p") String extension) {
+			@QueryParam("e") String extension) {
 
-		log.debug("param value, repository: {}, limit: {}, groupId: {}, artifactId: {}, classifier: {}, extension: {}",
+		log.info("param value, repository: {}, limit: {}, groupId: {}, artifactId: {}, classifier: {}, extension: {}",
 				repository, limit, groupId, artifactId, classifier, extension);
 
 		BoolQueryBuilder query = boolQuery();
@@ -168,9 +189,7 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 
 		log.debug("rundeck maven version query: {}", query);
 		SearchResponse result = searchService.search(query,
-				Collections.singletonList(
-						new FieldSortBuilder("assets.attributes.content.last_modified").order(SortOrder.DESC)),
-				0, limit);
+				Collections.singletonList(new FieldSortBuilder("assets.last_updated").order(SortOrder.DESC)), 0, limit);
 		log.debug("Result: {}", result);
 		List<RundeckXO> results = Arrays.stream(result.getHits().hits()).map(this::his2RundeckXO)
 				.collect(Collectors.toList());
@@ -178,6 +197,48 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 		// Another sort by version number
 		Collections.sort(results, new VersionComparator());
 		return results;
+	}
+
+	/**
+	 * Gets the fileName for a specific snapshot.
+	 *
+	 * @param repository
+	 * @param groupId
+	 * @param artifactId
+	 * @param version
+	 * @return
+	 */
+	public String latestSnapshot(String repository, String groupId, String artifactId, String version) {
+
+		log.info("param value, repository: {}, groupId: {}, artifactId: {}, version: {}", repository, groupId,
+				artifactId, version);
+
+		BoolQueryBuilder query = boolQuery();
+		query.filter(termQuery("format", "maven2"));
+
+		if (!isBlank(repository)) {
+			query.filter(termQuery("repository_name", repository));
+		}
+		if (!isBlank(groupId)) {
+			query.filter(termQuery("attributes.maven2.groupId", groupId));
+		}
+		if (!isBlank(artifactId)) {
+			query.filter(termQuery("attributes.maven2.artifactId", artifactId));
+		}
+		if (!isBlank(version)) {
+			query.filter(termQuery("assets.attributes.maven2.baseVersion", version));
+		}
+
+		log.debug("rundeck maven version query: {}", query);
+		SearchResponse result = searchService.search(query, Collections.singletonList(
+				new FieldSortBuilder("assets.last_updated").order(SortOrder.DESC)), 0, 2000);
+		log.debug("Result: {}", result);
+		List<RundeckXO> results = Arrays.stream(result.getHits().hits()).map(this::his2RundeckXO)
+				.collect(Collectors.toList());
+
+		// Another sort by version number
+		Collections.sort(results, new VersionComparator());
+		return results.get(0).getValue();
 	}
 
 	class VersionComparator implements Comparator<RundeckXO> {
@@ -201,7 +262,7 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 				try {
 					String[] parts = value.split("\\.");
 
-					log.debug("Parsing: {} - {}",value, parts[0]);
+					log.debug("Parsing: {} - {}", value, parts[0]);
 
 					major = Integer.parseInt(parts[0]);
 					if (parts[1].indexOf("-") > 0) {
@@ -230,6 +291,7 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 				}
 			}
 
+			@Override
 			public int compareTo(Version o) {
 				if (major > o.major) return 1;
 				if (major < o.major) return -1;
@@ -244,6 +306,7 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 			}
 		}
 
+		@Override
 		public int compare(RundeckXO o1, RundeckXO o2) {
 			Version v1 = new Version(o1.getValue());
 			Version v2 = new Version(o2.getValue());
