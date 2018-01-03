@@ -17,10 +17,12 @@
 package com.nongfenqi.nexus.plugin.rundeck;
 
 import static com.google.common.base.Preconditions.*;
+import static java.util.Collections.*;
 import static javax.ws.rs.core.MediaType.*;
 import static org.elasticsearch.index.query.QueryBuilders.*;
 import static org.sonatype.nexus.common.text.Strings2.*;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
@@ -44,8 +46,6 @@ import org.apache.http.client.utils.DateUtils;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.search.SearchHit;
-import org.elasticsearch.search.sort.FieldSortBuilder;
-import org.elasticsearch.search.sort.SortOrder;
 import org.sonatype.goodies.common.ComponentSupport;
 import org.sonatype.nexus.blobstore.api.Blob;
 import org.sonatype.nexus.repository.Repository;
@@ -58,8 +58,6 @@ import org.sonatype.nexus.repository.storage.StorageTx;
 import org.sonatype.nexus.rest.Resource;
 
 import com.google.common.base.Supplier;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 
 @Named
 @Singleton
@@ -161,9 +159,9 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 	@GET
 	@Path("version")
 	@Produces(APPLICATION_JSON)
-	public List<RundeckXO> version(@DefaultValue("10") @QueryParam("l") int limit, @QueryParam("r") String repository,
-			@QueryParam("g") String groupId, @QueryParam("a") String artifactId, @QueryParam("c") String classifier,
-			@QueryParam("e") String extension) {
+	public List<RundeckXO> version(@DefaultValue("10") @QueryParam("l") int limit,
+			@QueryParam("r") @DefaultValue("") String repository, @QueryParam("g") String groupId,
+			@QueryParam("a") String artifactId, @QueryParam("c") String classifier, @QueryParam("e") String extension) {
 
 		log.info("param value, repository: {}, limit: {}, groupId: {}, artifactId: {}, classifier: {}, extension: {}",
 				repository, limit, groupId, artifactId, classifier, extension);
@@ -188,14 +186,14 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 		}
 
 		log.debug("rundeck maven version query: {}", query);
-		SearchResponse result = searchService.search(query,
-				Collections.singletonList(new FieldSortBuilder("assets.last_updated").order(SortOrder.DESC)), 0, limit);
+		SearchResponse result = searchService.search(query, emptyList(), 0, limit);
 		log.debug("Result: {}", result);
 		List<RundeckXO> results = Arrays.stream(result.getHits().hits()).map(this::his2RundeckXO)
 				.collect(Collectors.toList());
 
 		// Another sort by version number
 		Collections.sort(results, new VersionComparator());
+		// if (repository.equals("snapshots")) results = removeOldSnapshots(results);
 		return results;
 	}
 
@@ -230,8 +228,7 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 		}
 
 		log.debug("rundeck maven version query: {}", query);
-		SearchResponse result = searchService.search(query, Collections.singletonList(
-				new FieldSortBuilder("assets.last_updated").order(SortOrder.DESC)), 0, 2000);
+		SearchResponse result = searchService.search(query, emptyList(), 0, 2000);
 		log.debug("Result: {}", result);
 		List<RundeckXO> results = Arrays.stream(result.getHits().hits()).map(this::his2RundeckXO)
 				.collect(Collectors.toList());
@@ -241,68 +238,105 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 		return results.get(0).getValue();
 	}
 
+	/**
+	 * Breaks a version string into a collection of parts. Each part is an Integer or a String. Anything not an int or
+	 * character is treated as a delimiter. Parts are compared with each other until we get a non-zero result.
+	 *
+	 * Sample Versions: <br>
+	 * <li>17.22-RC-20171110.165811-1
+	 * <li>17.22-20171108.131206-6
+	 * <li>17.20-20171017.181503-6
+	 * <li>0.0.0-24-develop
+	 *
+	 * @author jwilliams
+	 *
+	 */
 	class VersionComparator implements Comparator<RundeckXO> {
 		class Version implements Comparable<Version> {
-			int major;
-			int minor;
-			int patch;
-			String dateStr;
+			List<Object> parts;
 
 			public Version(String value) {
-				major = 0;
-				minor = 0;
-				patch = 0;
-				dateStr = "";
+				parse(value);
+			}
 
-				// Expected formats:
-				// 1.0-20170105.185744
-				// 1.0.2-20170105.185744
-				// 0.0.0-50-develop
-				// 17.17.2
-				try {
-					String[] parts = value.split("\\.");
+			private void parse(String value) {
+				parts = new ArrayList<>();
 
-					log.debug("Parsing: {} - {}", value, parts[0]);
+				StringBuilder buffer = new StringBuilder();
+				for (int i = 0; i < value.length(); i++) {
+					int ch = value.charAt(i);
 
-					major = Integer.parseInt(parts[0]);
-					if (parts[1].indexOf("-") > 0) {
-						String[] minorParts = parts[1].split("\\-");
-						minor = Integer.parseInt(minorParts[0]);
-						dateStr = minorParts[1];
+					if (Character.isLetterOrDigit(ch)) {
+						buffer.append((char) ch);
 					}
 					else {
-						minor = Integer.parseInt(parts[1]);
-
-						if (parts.length >= 3) {
-							if (parts[2].indexOf("-") > 0) {
-								String[] patchParts = parts[2].split("\\-");
-								patch = Integer.parseInt(patchParts[0]);
-								dateStr = patchParts[1];
+						if (buffer.length() > 0) {
+							try {
+								Integer val = Integer.parseInt(buffer.toString());
+								parts.add(val);
 							}
-							else {
-								patch = Integer.parseInt(parts[2]);
+							catch (Exception e) {
+								// not an int - just add the string
+								parts.add(buffer.toString());
 							}
+							buffer.setLength(0);
 						}
-						dateStr = "";
 					}
 				}
-				catch (Exception e) {
-					log.error("Could not parse: {}", value, e);
+				if (buffer.length() > 0) {
+					try {
+						Integer val = Integer.parseInt(buffer.toString());
+						parts.add(val);
+					}
+					catch (Exception e) {
+						// not an int - just add the string
+						parts.add(buffer.toString());
+					}
+				}
+				log.debug("Version {} - PARTS:", value);
+				for (Object obj : parts) {
+					log.debug("   " + obj.toString());
 				}
 			}
 
+			@SuppressWarnings({ "unchecked", "cast", "rawtypes" })
 			@Override
 			public int compareTo(Version o) {
-				if (major > o.major) return 1;
-				if (major < o.major) return -1;
+				log.info("Comparing parts");
+				for (int i = 0; i < parts.size(); i++) {
+					if (i >= o.parts.size()) return -1;
 
-				if (minor > o.minor) return 1;
-				if (minor < o.minor) return -1;
+					Object mine = parts.get(i);
+					Object theirs = o.parts.get(i);
+					int result;
+					if (mine.getClass().isInstance(theirs)) {
+						result = ((Comparable) mine).compareTo((Comparable) theirs);
+					}
+					else {
+						// We've hit something where one version is like: 17.20-RC-20171025.155355-1
+						// and version 2 is: 17.20-20171024.222631-7
+						// We are comparing RC to 20171024. By definition RC always ranks higher than a dated version.
+						// This is, obviously, assuming we don't have other strings in the versions.
+						if (mine instanceof String) {
+							// theirs is an Integer
+							result = 1;
+						}
+						else {
+							// mine's an Integer, theirs is a string
+							result = -1;
+						}
+					}
 
-				if (patch > o.patch) return 1;
-				if (patch < o.patch) return -1;
+					if (result != 0) {
+						log.info("...{} <> {} == {}", mine, theirs, result);
+						return result;
+					}
+				}
 
-				return dateStr.compareTo(o.dateStr);
+				// if there are more parts in 'theirs' then return -1
+				if (o.parts.size() > parts.size()) return -1;
+
+				return 0;
 			}
 		}
 
