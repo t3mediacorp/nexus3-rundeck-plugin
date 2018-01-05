@@ -46,6 +46,8 @@ import org.apache.http.client.utils.DateUtils;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.sort.FieldSortBuilder;
+import org.elasticsearch.search.sort.SortOrder;
 import org.sonatype.goodies.common.ComponentSupport;
 import org.sonatype.nexus.blobstore.api.Blob;
 import org.sonatype.nexus.repository.Repository;
@@ -186,14 +188,25 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 		}
 
 		log.debug("rundeck maven version query: {}", query);
-		SearchResponse result = searchService.search(query, emptyList(), 0, limit);
+
+		// use a super large limit since we can't rely on the sort to sort in version order
+		int bigLimit = Math.max(limit, 2000);
+		SearchResponse result = searchService.search(query,
+				Collections.singletonList(new FieldSortBuilder("assets.last_updated").order(SortOrder.DESC)), 0,
+				bigLimit);
 		log.debug("Result: {}", result);
 		List<RundeckXO> results = Arrays.stream(result.getHits().hits()).map(this::his2RundeckXO)
 				.collect(Collectors.toList());
 
 		// Another sort by version number
 		Collections.sort(results, new VersionComparator());
+
+		// TODO: Filter out duplicates in snapshot versions
 		// if (repository.equals("snapshots")) results = removeOldSnapshots(results);
+		if (limit < results.size()) {
+			results = results.subList(0, limit);
+		}
+
 		return results;
 	}
 
@@ -310,7 +323,7 @@ public class RundeckMavenResource extends ComponentSupport implements Resource {
 					Object theirs = o.parts.get(i);
 					int result;
 					if (mine.getClass().isInstance(theirs)) {
-						result = ((Comparable) mine).compareTo((Comparable) theirs);
+						result = ((Comparable) mine).compareTo(theirs);
 					}
 					else {
 						// We've hit something where one version is like: 17.20-RC-20171025.155355-1
